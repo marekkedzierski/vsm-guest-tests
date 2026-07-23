@@ -59,8 +59,18 @@ typedef struct {
 } VSMT_PHYS_BYPASS;
 
 typedef struct {
-    BOOLEAN  ExecBlocked;
-    BOOLEAN  WriteProtBlocked;
+    // Use UINT32 for all boolean fields -- matches BOOL (DWORD) on the user-mode side
+    // so the struct layout is identical across the IOCTL boundary.
+
+    // Method 1: NonPagedPoolNx supervisor execute
+    UINT32   ExecBlocked;          // 1 = NX pool exec blocked from Ring 0
+    UINT32   WriteProtBlocked;     // 1 = MmProtectMdl(RWX) blocked by HVCI
+
+    // Method 2: user-GPA via MmMapIoSpace → supervisor execute attempt
+    UINT32   UserGpaReadAllowed;   // 1 = kernel can still READ the user GPA
+    UINT32   UserGpaExecBlocked;   // 1 = supervisor execute blocked (MBEC working)
+    UINT64   UserGpaPhysAddr;      // PA of the user-mode page (reference)
+
     NTSTATUS Status;
 } VSMT_MBEC_EXEC;
 
@@ -386,6 +396,103 @@ NTSTATUS HandleMbecExec(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     }
 
     ExFreePool(pool);
+
+    // -------------------------------------------------------------------------
+    // Method 2: user-GPA supervisor execute via MmMapIoSpace
+    //
+    // Definitively tests MBEC's per-privilege-level execute control.
+    //
+    // Key insight: MmMapIoSpace creates a new kernel PTE (U/S=0) for the same
+    // physical page as a user-mode executable allocation.  SMEP is satisfied
+    // (PTE U/S=0 → supervisor fetch allowed at page-table level).  The ONLY
+    // thing that can still block execution is EPT supervisor-execute=0 — i.e.,
+    // MBEC enforced by VTL1 via HvCallModifyVtlProtectionMask.
+    //
+    // Without MBEC: EPT has a single X bit; user executable page → X=1 for all
+    //              rings → kernel execution succeeds (UserGpaExecBlocked = FALSE).
+    // With MBEC:   VTL1 sets EPT supervisor-X=0 on user-mode GPAs;
+    //              kernel execution faults (UserGpaExecBlocked = TRUE).
+    // -------------------------------------------------------------------------
+    {
+        PVOID   userVa     = NULL;
+        SIZE_T  regionSize = PAGE_SIZE;
+
+        // Allocate a user-mode executable page in the calling process context.
+        // We are in the IRP dispatch context so NtCurrentProcess() is correct.
+        static const UCHAR sc[] = { 0x48, 0x31, 0xC0, 0xC3 }; // xor rax,rax; ret
+        NTSTATUS allocSt = ZwAllocateVirtualMemory(
+            NtCurrentProcess(), &userVa, 0, &regionSize,
+            MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+
+        if (NT_SUCCESS(allocSt) && userVa) {
+            // Write shellcode into user-mode page via SEH
+            {
+                ULONG i;
+                __try {
+                    for (i = 0; i < sizeof(sc); i++)
+                        ((volatile UCHAR*)userVa)[i] = sc[i];
+                }
+                __except (EXCEPTION_EXECUTE_HANDLER) {
+                    KdPrint(("VsmTest: M2: user page write faulted\n"));
+                }
+            }
+
+            // Get physical address of the user-mode page
+            {
+                PHYSICAL_ADDRESS userPA = MmGetPhysicalAddress(userVa);
+                s->UserGpaPhysAddr = userPA.QuadPart;
+
+                KdPrint(("VsmTest: M2: user VA=%p PA=0x%llX\n", userVa, userPA.QuadPart));
+
+                if (userPA.QuadPart != 0) {
+                    // Create a kernel VA mapping to the same GPA.
+                    // PTE U/S=0 → SMEP satisfied.
+                    // EPT supervisor-execute bit is the only remaining gate.
+                    PVOID kernMap = MmMapIoSpace(userPA, PAGE_SIZE, MmCached);
+                    if (kernMap) {
+                        // Read test: EPT R bit should still be 1 for user GPAs
+                        {
+                            UCHAR dummy = 0;
+                            __try {
+                                dummy = ((volatile UCHAR*)kernMap)[0];
+                                (void)dummy;
+                                s->UserGpaReadAllowed = TRUE;
+                            }
+                            __except (EXCEPTION_EXECUTE_HANDLER) {
+                                s->UserGpaReadAllowed = FALSE;
+                                KdPrint(("VsmTest: M2: kernel read of user GPA faulted\n"));
+                            }
+                        }
+
+                        // Execute test: MBEC supervisor-execute=0 must block this
+                        {
+                            typedef UINT64(*fn_t)(void);
+                            __try {
+                                UINT64 r = ((fn_t)kernMap)();
+                                (void)r;
+                                s->UserGpaExecBlocked = FALSE;
+                                KdPrint(("VsmTest: M2: kernel exec of user GPA SUCCEEDED"
+                                         " -- MBEC supervisor-X not enforced!\n"));
+                            }
+                            __except (EXCEPTION_EXECUTE_HANDLER) {
+                                s->UserGpaExecBlocked = TRUE;
+                                KdPrint(("VsmTest: M2: kernel exec of user GPA BLOCKED"
+                                         " -- EPT supervisor-X=0 confirmed.\n"));
+                            }
+                        }
+
+                        MmUnmapIoSpace(kernMap, PAGE_SIZE);
+                    }
+                }
+            }
+
+            // Free user-mode allocation
+            regionSize = 0;
+            ZwFreeVirtualMemory(NtCurrentProcess(), &userVa, &regionSize, MEM_RELEASE);
+        } else {
+            KdPrint(("VsmTest: M2: ZwAllocateVirtualMemory failed 0x%X\n", allocSt));
+        }
+    }
 
     s->Status = STATUS_SUCCESS;
     *outInfo = sizeof(VSMT_MBEC_EXEC);

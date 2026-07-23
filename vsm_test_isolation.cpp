@@ -80,15 +80,17 @@ typedef struct {
 
 typedef struct {
     //
-    // MBEC supervisor execute test.
-    // Allocates NonPagedPoolNx (non-execute by default).
-    // Writes trivial shellcode: xor rax,rax; ret.
-    // Tries to execute it from kernel mode.
-    // With MBEC/HVCI: EPT supervisor-execute = 0 -> fault -> ExecBlocked = TRUE.
-    // Without HVCI:   execution succeeds -> ExecBlocked = FALSE.
-    //
-    BOOL     ExecBlocked;       // TRUE: supervisor execute blocked (MBEC working)
-    BOOL     WriteProtBlocked;  // TRUE: MmProtectMdlSystemAddress to RWX also blocked
+    // Method 1: NonPagedPoolNx supervisor execute (HVCI baseline)
+    BOOL     ExecBlocked;          // TRUE: NX pool exec blocked from Ring 0
+    BOOL     WriteProtBlocked;     // TRUE: MmProtectMdl(RWX) blocked by HVCI
+
+    // Method 2: user-GPA via MmMapIoSpace -> supervisor execute (definitive MBEC test)
+    // User-mode PAGE_EXECUTE_READ page physically mapped with kernel PTE (U/S=0).
+    // SMEP is satisfied; only EPT supervisor-execute=0 can block execution.
+    BOOL     UserGpaReadAllowed;   // TRUE: kernel can read the user GPA (EPT R=1)
+    BOOL     UserGpaExecBlocked;   // TRUE: supervisor execute blocked (MBEC confirmed)
+    UINT64   UserGpaPhysAddr;      // Physical address used (for reference)
+
     NTSTATUS Status;
 } VSMT_MBEC_EXEC;
 
@@ -589,30 +591,60 @@ void sect20_mbec_supervisor_exec()
     }
     CloseHandle(h);
 
-    printf("\n  ExecBlocked (NX pool execute attempt) : %s\n",
-           mbec.ExecBlocked ? "YES -- execute faulted" : "NO -- execute succeeded!");
-    printf("  WriteProtBlocked (pool write prot)    : %s\n",
+    // ---- Method 1: NonPagedPoolNx execute ----
+    ioSUB("Method 1: NonPagedPoolNx supervisor execute");
+    printf("  ExecBlocked (NX pool Ring 0 execute)  : %s\n",
+           mbec.ExecBlocked ? "YES -- faulted" : "NO -- succeeded!");
+    printf("  WriteProtBlocked (MmProtectMdl RWX)   : %s\n",
            mbec.WriteProtBlocked ? "YES" : "NO");
 
-    if (mbec.ExecBlocked) {
-        ioPASS("MBEC supervisor execute blocked: NonPagedPoolNx execute faulted from Ring 0");
+    if (mbec.ExecBlocked)
+        ioPASS("M1: NX pool supervisor execute blocked (EPT supervisor-X=0)");
+    else if (!hvciActive)
+        ioWARN("M1: MBEC not tested", "HVCI not active -- expected without VTL1");
+    else if (hvciActive && !mbecCpuid)
+        ioWARN("M1: MBEC not available",
+               "Exec succeeded with HVCI active but MBEC CPUID[18]=0. "
+               "KVM must advertise MBEC and enable EPT MBEC / AMD GMET.");
+    else
+        ioFAIL("M1: NX pool NOT protected",
+               "KVM: VTL1 SkmiProtectPageRange did not clear EPT supervisor-X "
+               "on NX pool pages. Check HvCallModifyVtlProtectionMask handler.");
+
+    // ---- Method 2: user-GPA via MmMapIoSpace (definitive MBEC test) ----
+    ioSUB("Method 2: user-GPA supervisor execute via MmMapIoSpace (definitive MBEC)");
+    printf("  Physical address of user page          : 0x%016llX\n", mbec.UserGpaPhysAddr);
+    printf("  Kernel read of user GPA allowed        : %s  (expected YES)\n",
+           mbec.UserGpaReadAllowed ? "YES" : "NO");
+    printf("  Kernel exec of user GPA blocked        : %s\n",
+           mbec.UserGpaExecBlocked ? "YES -- EPT supervisor-X=0" : "NO -- exec succeeded!");
+
+    printf("\n  Why this is the definitive MBEC test:\n");
+    printf("   MmMapIoSpace maps the user-mode page with a kernel PTE (U/S=0).\n");
+    printf("   SMEP is satisfied (no U/S=1 PTE involved in the fetch).\n");
+    printf("   The ONLY thing that can block the execute is EPT supervisor-execute=0\n");
+    printf("   set by VTL1 via HvCallModifyVtlProtectionMask on user-mode GPAs.\n");
+    printf("   Without MBEC: EPT has one X bit, user page X=1 -> kernel exec works.\n");
+    printf("   With MBEC:    VTL1 sets EPT_X_SUPER=0 on user GPAs -> blocked.\n\n");
+
+    if (mbec.UserGpaPhysAddr == 0) {
+        ioWARN("M2: user page alloc failed", "ZwAllocateVirtualMemory returned 0 PA -- "
+               "page not pinned or MmGetPhysicalAddress returned 0");
+    } else if (!mbec.UserGpaReadAllowed) {
+        ioWARN("M2: kernel read faulted", "Unexpected -- EPT R bit should be 1 for user GPAs");
+    } else if (mbec.UserGpaExecBlocked) {
+        ioPASS("M2: MBEC CONFIRMED -- kernel exec of user-mode GPA blocked by EPT supervisor-X=0");
         if (mbecCpuid)
-            printf("         Intel: EPT supervisor-execute bit = 0 on NX pool pages\n");
+            printf("         Intel: VMCS secondary bit 22 (MODE_BASED_EPT_EXECUTE_CONTROL) active\n");
         else
-            printf("         AMD: GMET/NPT supervisor-execute = 0 on NX pool pages\n");
-    } else if (!hvciActive) {
-        ioWARN("MBEC not tested",
-               "Execute succeeded but HVCI is not active -- expected without VTL1 protection");
-    } else if (hvciActive && !mbecCpuid) {
-        ioWARN("MBEC not available",
-               "Execute succeeded with HVCI active but MBEC not advertised -- "
-               "HVCI is write-protecting code only, not blocking supervisor execute. "
-               "KVM must set CPUID 0x40000006[18] and enable EPT MBEC / GMET.");
+            printf("         AMD: GMET NPT supervisor-execute=0 on user-mode GPAs\n");
     } else {
-        ioFAIL("MBEC supervisor execute NOT blocked",
-               "Execute from NonPagedPoolNx succeeded despite HVCI + MBEC active. "
-               "KVM: check that EPT supervisor-execute bit (Intel) or GMET NPT bit (AMD) "
-               "is cleared for NX pool pages when VTL1 calls SkmiProtectPageRange.");
+        ioFAIL("M2: MBEC NOT enforced",
+               "Kernel executed user-mode GPA via MmMapIoSpace (SMEP-safe mapping). "
+               "KVM: VTL1 must set EPT_X_SUPER=0 on all user-mode GPAs via "
+               "HvCallModifyVtlProtectionMask when MBEC is enabled. "
+               "Intel: ensure VMCS secondary controls bit 22 is set. "
+               "AMD: ensure GMET bit is set in VMCB and NPT G-bit cleared on user pages.");
     }
 }
 
