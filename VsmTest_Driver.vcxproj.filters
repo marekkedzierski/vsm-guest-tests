@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{B2C3D4E5-0002-0002-0002-000000000001}</UniqueIdentifier>
+      <Extensions>c;cpp</Extensions>
+    </Filter>
+    <Filter Include="Assembly">
+      <UniqueIdentifier>{B2C3D4E5-0002-0002-0002-000000000002}</UniqueIdentifier>
+      <Extensions>asm</Extensions>
+    </Filter>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClCompile Include="vsm_ktest.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="vsm_ktest_isolation.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <MASM Include="vsm_vmcall.asm">
+      <Filter>Assembly</Filter>
+    </MASM>
+  </ItemGroup>
+
+</Project>

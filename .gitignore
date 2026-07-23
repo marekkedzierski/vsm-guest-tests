@@ -1,0 +1,27 @@
+# Build output
+Debug/
+Release/
+x64/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.idb
+*.ipdb
+*.iobj
+*.log
+
+# VS generated
+.vs/
+*.user
+*.suo
+*.aps
+*.ncb
+*.sdf
+*.opensdf
+ipch/
+
+# Driver signing artifacts
+*.cat
+*.cer
