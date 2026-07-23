@@ -25,3 +25,7 @@ ipch/
 # Driver signing artifacts
 *.cat
 *.cer
+
+# Sensitive reverse-engineering reference material (not for public repo)
+hv_vsm_hypercalls.h
+hv_vsm_hypercalls_impl_notes.c
