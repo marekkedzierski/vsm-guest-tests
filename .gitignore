@@ -30,3 +30,4 @@ ipch/
 hv_vsm_hypercalls.h
 hv_vsm_hypercalls_impl_notes.c
 morlock_analysis.txt
+ept_vtl_analysis.txt
