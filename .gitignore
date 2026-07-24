@@ -32,3 +32,5 @@ hv_vsm_hypercalls_impl_notes.c
 morlock_analysis.txt
 ept_vtl_analysis.txt
 tpm_securekernel_analysis.txt
+ci_dll_analysis.txt
+winload_lsaiso_analysis.txt
