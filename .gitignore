@@ -34,3 +34,4 @@ ept_vtl_analysis.txt
 tpm_securekernel_analysis.txt
 ci_dll_analysis.txt
 winload_lsaiso_analysis.txt
+cng_ksecdd_analysis.txt
