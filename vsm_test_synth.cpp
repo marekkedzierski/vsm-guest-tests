@@ -181,7 +181,7 @@ typedef struct {
 // Output helpers (keep self-contained)
 // ---------------------------------------------------------------------------
 
-static int s12_pass = 0, s12_fail = 0, s12_warn = 0;
+int s12_pass = 0, s12_fail = 0, s12_warn = 0;
 
 static void s12PASS(const char* m) { printf("  [PASS] %s\n", m); s12_pass++; }
 static void s12FAIL(const char* m, const char* d) {

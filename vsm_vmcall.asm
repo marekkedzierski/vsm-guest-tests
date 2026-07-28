@@ -102,4 +102,27 @@ VsmtWrmsr PROC
     ret
 VsmtWrmsr ENDP
 
+;
+; VsmtFxSave(void* saveArea) -> void
+;
+; Saves x87/SSE state to a 512-byte buffer (must be 16-byte aligned).
+; Used by HandleXsaveIsolation to snapshot XMM registers around VTL switches.
+;
+PUBLIC VsmtFxSave
+VsmtFxSave PROC
+    fxsave [rcx]
+    ret
+VsmtFxSave ENDP
+
+;
+; VsmtFxRstor(void* saveArea) -> void
+;
+; Restores x87/SSE state from a 512-byte buffer (must be 16-byte aligned).
+;
+PUBLIC VsmtFxRstor
+VsmtFxRstor PROC
+    fxrstor [rcx]
+    ret
+VsmtFxRstor ENDP
+
 END

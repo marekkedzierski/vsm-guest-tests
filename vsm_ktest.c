@@ -286,34 +286,16 @@ static NTSTATUS HandleIntelCaps(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
 //   0x0082  HvCallRegisterDeviceId  -- registration test (careful)
 // ---------------------------------------------------------------------------
 
-#pragma warning(disable: 4100)  // unused parameter in stub
+// Declared in vsm_vmcall.asm:
+extern UINT64 VsmtFastHypercall(UINT64 callCode, UINT64 inputVal);
 
 static UINT64 VsmtIssueHypercall(UINT64 callCode, UINT64 input)
 {
-    //
-    // Standard x64 hypercall ABI (Hyper-V TLFS section 3.1):
-    //   VMCALL with:
-    //     RCX = HV_CALL_ATTRIBUTES | callCode
-    //     RDX = input
-    //     R8  = output (ignored for fast calls)
-    //   Return value in RAX = HV_STATUS
-    //
-    // We use VMCALL via inline assembly (__vmx_vmcall is not available
-    // from C; use _mm_clflush as a placeholder for the actual VMCALL
-    // or compile with MASM for the real call).
-    //
-    // In production: replace this with the VMCALL instruction.
-    //
-    UINT64 status = 0xFFFFFFFFFFFFFFFFull; // placeholder: "not implemented"
-
-    // TODO: replace with actual VMCALL when assembling with MASM:
-    //   mov  rax, callCode
-    //   mov  rdx, input
-    //   vmcall
-    //   mov  status, rax
-
-    KdPrint(("VsmTest: hypercall 0x%llX (stub -- implement VMCALL)\n", callCode));
-    return status;
+    // Fast hypercall via VMCALL instruction (vsm_vmcall.asm).
+    // callCode must include the fast bit (bit 16) if the caller wants
+    // register-based I/O. The MASM stub maps directly to the Hyper-V ABI:
+    //   RCX = callCode, RDX = input -> VMCALL -> RAX = HV_STATUS
+    return VsmtFastHypercall(callCode, input);
 }
 
 static NTSTATUS HandleHypercall(PVOID inBuf, ULONG inLen,
@@ -475,13 +457,11 @@ static NTSTATUS HandleVpRegister(PVOID inBuf, ULONG inLen,
     PHYSICAL_ADDRESS inPhys  = MmGetPhysicalAddress(inPage);
     PHYSICAL_ADDRESS outPhys = MmGetPhysicalAddress(outPage);
 
-    // HvCallGetVpRegisters = 0x0050
-    // Call code: 0x0050 | (RepCount=1 << 32) | fast=0
-    // Input count = 1 (one register), rep = 1
-    UINT64 callCode = 0x0050ull | (1ull << 17); // fast hypercall bit | call code
-
-    // For rep list hypercall: callCode = 0x0050, input in GPA
-    UINT64 hvStatus = VsmtSlowHypercall(0x0050ull, inPhys.QuadPart, outPhys.QuadPart);
+    // HvCallGetVpRegisters = 0x0050 (rep hypercall)
+    // TLFS 3.1: rep count goes in bits [43:32] of the call code.
+    // We read 1 register, so rep count = 1.
+    UINT64 hvStatus = VsmtSlowHypercall(0x0050ull | (1ull << 32),
+                                         inPhys.QuadPart, outPhys.QuadPart);
 
     KdPrint(("VsmTest: GetVpRegisters(0x%X) hvStatus=0x%llX\n", io->RegisterId, hvStatus));
 
@@ -574,6 +554,10 @@ static NTSTATUS HandlePartitionProp(PVOID inBuf, ULONG inLen,
 NTSTATUS VsmtIsolationDispatch(ULONG code, PVOID buf, ULONG inLen, ULONG outLen,
                                 PULONG_PTR outInfo);
 
+// Forward declaration -- implemented in vsm_ktest_kvmvsm.c
+NTSTATUS VsmtKvmVsmDispatch(ULONG code, PVOID buf, ULONG inLen, ULONG outLen,
+                             PULONG_PTR outInfo);
+
 // ---------------------------------------------------------------------------
 // IRP dispatch
 // ---------------------------------------------------------------------------
@@ -637,6 +621,9 @@ static NTSTATUS VsmtDispatchIoctl(PDEVICE_OBJECT dev, PIRP irp)
     default:
         // Delegate sections 17-22 IOCTLs to isolation module
         status = VsmtIsolationDispatch(code, buf, inLen, outLen, &outInfo);
+        // Delegate sections 23-34 IOCTLs to KVM VSM module
+        if (status == STATUS_INVALID_DEVICE_REQUEST)
+            status = VsmtKvmVsmDispatch(code, buf, inLen, outLen, &outInfo);
         break;
     }
 

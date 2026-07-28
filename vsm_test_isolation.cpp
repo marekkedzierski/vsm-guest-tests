@@ -68,13 +68,13 @@ typedef struct {
 typedef struct {
     //
     // Physical mapping bypass test.
-    // The driver maps ntdll.dll's first code page PA via MmMapIoSpace
+    // The driver maps ntoskrnl's first code page PA via MmMapIoSpace
     // (bypasses VTL0 page table protections, hits EPT/NPT directly).
     // If HVCI/VTL1 has set EPT write-protect on that GPA, the write will fault.
     //
-    UINT64   NtdllCodePagePa;   // PA of ntdll's first code page (for reference)
-    BOOL     WriteBlocked;      // TRUE: EPT write-protect enforced (VTL1 SLAT working)
-    BOOL     ReadAllowed;       // TRUE: reads still work (expected: VTL0 can read code pages)
+    UINT64   NtoskrnlCodePagePa; // PA of ntoskrnl's first code page (for reference)
+    BOOL     WriteBlocked;       // TRUE: EPT write-protect enforced (VTL1 SLAT working)
+    BOOL     ReadAllowed;        // TRUE: reads still work (expected: VTL0 can read code pages)
     NTSTATUS Status;
 } VSMT_PHYS_BYPASS;
 
@@ -122,7 +122,7 @@ typedef struct {
 // Helpers
 // ---------------------------------------------------------------------------
 
-static int iso_pass = 0, iso_fail = 0, iso_warn = 0;
+int iso_pass = 0, iso_fail = 0, iso_warn = 0;
 static void ioPASS(const char* m) { printf("  [PASS] %s\n", m); iso_pass++; }
 static void ioFAIL(const char* m, const char* d) {
     printf("  [FAIL] %s\n         --> %s\n", m, d); iso_fail++;
@@ -409,7 +409,7 @@ void sect18_ref_tsc_page()
 // write-protected via HvCallModifyVtlProtectionMask (hypercall 0x00B1).
 // EPT/NPT enforces this at the SLAT level, not at the page table level.
 //
-// Test: map a code page (ntdll.dll) by physical address via MmMapIoSpace
+// Test: map a code page (ntoskrnl) by physical address via MmMapIoSpace
 // (bypasses CR3/PTE protections, goes directly through EPT/NPT) and attempt:
 //   a) READ:  should succeed (VTL0 can read code pages)
 //   b) WRITE: should fault  (VTL1 has marked code GPAs as write-protected)
@@ -454,7 +454,7 @@ void sect19_vtl_isolation()
     if (h == INVALID_HANDLE_VALUE) {
         printf("  [SKIP] VsmTest.sys not loaded -- add VSMT_IOCTL_PHYS_BYPASS\n\n");
         printf("  Logic (in driver, kernel mode):\n");
-        printf("   1. MmGetPhysicalAddress(ntdll_code_page_va) -> PA\n");
+        printf("   1. MmGetPhysicalAddress(ntoskrnl_code_page_va) -> PA\n");
         printf("   2. mapped = MmMapIoSpace(PA, PAGE_SIZE, MmCached)\n");
         printf("      (creates new VTL0 kernel VA -> same GPA, bypasses page table permissions)\n");
         printf("   3. Read test:  val = *(volatile BYTE*)mapped  -- should SUCCEED\n");
@@ -478,7 +478,7 @@ void sect19_vtl_isolation()
     }
     CloseHandle(h);
 
-    printf("  ntdll code page PA         : 0x%016llX\n", pb.NtdllCodePagePa);
+    printf("  ntoskrnl code page PA      : 0x%016llX\n", pb.NtoskrnlCodePagePa);
     printf("  Read via MmMapIoSpace      : %s\n", pb.ReadAllowed ? "allowed" : "faulted");
     printf("  Write via MmMapIoSpace     : %s\n", pb.WriteBlocked ? "BLOCKED (EPT write-protect)" : "succeeded (NOT protected!)");
 
@@ -649,34 +649,36 @@ void sect20_mbec_supervisor_exec()
 }
 
 // ---------------------------------------------------------------------------
-// SECTION 21 -- KVM MSR pass-through: SPEC_CTRL (0x48) and PRED_CMD (0x49)
+// SECTION 21 -- VTL1 Speculation Control cross-check (0xD5 key bits)
 //
-// securekernel writes these MSRs from VTL1 before returning to VTL0:
-//   wrmsr(0x48) -- IA32_SPEC_CTRL: IBRS + STIBP bits
-//   wrmsr(0x49) -- PRED_CMD: IBPB flush (value 1)
-// Source: SkCallNormalMode, driven by per-CPU gs:0xAB0 flags set by
-//         SkiUpdateSpeculationControl (securekernel.exe line 207872).
+// Cross-checks specific 0xD5 output bits that indicate whether KVM is
+// correctly passing speculation MSR writes from VTL1 to hardware.
 //
-// KVM must not intercept and drop these MSR writes. The 0xD5 query
-// reflects whether securekernel actually ran this code successfully,
-// which means KVM's wrmsr emulation for 0x48 and 0x49 is working.
+// Confirmed bit semantics (from securekernel + ntoskrnl disassembly,
+// see VSM_VTL_Speculation_Fields.txt for full map):
 //
-// 0xD5[0]  = hardcoded 1 in SkeQuerySpeculationFeaturesInformation:
-//            if 0, securekernel did not provide the data -> IUM service
-//            258 dispatch is broken in KVM (VTL1 not routing the call).
-// 0xD5[5]  = IBRS present: securekernel detected IBRS and wrmsr(0x48)
-//            with IBRS bit is passing through KVM unblocked.
-// 0xD5[11] = STIBP written at VTL boundary: KVM passes wrmsr(0x48)
-//            with STIBP bit through at VTL0 return path.
-// 0xD5[12] = IBPB flushed at VTL boundary: KVM passes wrmsr(0x49, 1)
-//            through at VTL0 return path (PRED_CMD MSR).
+// 0xD5[0]  = sentinel always-1 (SK0: hardcoded in SkeQuerySpeculationFeaturesInformation)
+// 0xD5[4]  = sentinel always-1 (SK17: or edx,20000h)
+// 0xD5[5]  = sentinel always-1 (SK16: or ecx,200h + shl 7)
+// 0xD5[8]  = SF[0] IBRS present (SK10: SkiSpeculationFeatures bit 0)
+// 0xD5[11] = NOT SF[8] -- CPU needs SSBD (SK15: !SkiSpeculationFeatures[8])
+// 0xD5[12] = gs:0xAB0[1] IBPB on VTL exit (SK11: per-CPU boundary enforcement)
+// 0xD5[13] = gs:0xAB0[2] IBPB on VTL entry (SK12: per-CPU boundary enforcement)
+//
+// For KVM MSR pass-through verification:
+//   Bit 8 (IBRS present) confirms KVM is exposing CPUID speculation features
+//   correctly so securekernel detects IBRS hardware.
+//   Bits 12-13 (boundary enforcement) confirm securekernel is issuing
+//   wrmsr(0x49, IBPB) at VTL transitions -- which means KVM is passing
+//   PRED_CMD writes through to hardware.
 // ---------------------------------------------------------------------------
 
 void sect21_kvm_msr_passthrough(PNtQuerySystemInformation NtQSI)
 {
-    ioSECT(21, "KVM MSR pass-through: SPEC_CTRL (0x48) and PRED_CMD (0x49)");
-    printf("  What this tests: KVM must not block wrmsr(0x48) / wrmsr(0x49) from VTL1.\n");
-    printf("  Source: securekernel SkCallNormalMode wrmsr path, line 207872.\n\n");
+    ioSECT(21, "VTL1 Speculation Control: 0xD5 cross-check");
+    printf("  Tests KVM MSR pass-through for SPEC_CTRL (0x48) / PRED_CMD (0x49).\n");
+    printf("  Source: securekernel SkCallNormalMode, SkiUpdateSpeculationControl.\n");
+    printf("  Bit semantics confirmed from securekernel + ntoskrnl disassembly.\n\n");
 
     ULONG secspec = 0, retLen;
     NTSTATUS st = NtQSI((SYSTEM_INFORMATION_CLASS)0xD5,
@@ -688,45 +690,71 @@ void sect21_kvm_msr_passthrough(PNtQuerySystemInformation NtQSI)
 
     printf("  Raw 0xD5 DWORD: 0x%08X\n\n", secspec);
 
-    // Sentinel: always 1 in SkeQuerySpeculationFeaturesInformation.
-    // If 0: KVM's IUM service 258 dispatch is not routing to securekernel.
-    printf("  %-52s : %s\n", "0xD5[0]  Sentinel (always 1 if SK provided data)",
-           (secspec >> 0) & 1 ? "1 -- OK" : "0 -- FAIL: IUM dispatch broken in KVM");
+    // Sentinel bits: 0, 4, 5 must all be 1 when SK provided data
+    printf("  %-52s : %s\n", "0xD5[0]  sentinel always-1 (SK0: hardcoded)",
+           (secspec >> 0) & 1 ? "1 -- OK" : "0 -- BROKEN");
+    printf("  %-52s : %s\n", "0xD5[4]  sentinel always-1 (SK17: or edx,20000h)",
+           (secspec >> 4) & 1 ? "1 -- OK" : "0 -- BROKEN");
+    printf("  %-52s : %s\n", "0xD5[5]  sentinel always-1 (SK16: or ecx,200h+shl7)",
+           (secspec >> 5) & 1 ? "1 -- OK" : "0 -- BROKEN");
+
     if (!((secspec >> 0) & 1)) {
         ioFAIL("IUM service 258 dispatch",
-               "0xD5[0] = 0. KVM is not routing the VslGetSecureSpeculationControlInformation "
-               "call to securekernel. All other bits below are meaningless.");
+               "0xD5[0] = 0. KVM is not routing VslGetSecureSpeculationControlInformation "
+               "to securekernel. All other bits are meaningless.");
         return;
     }
-    ioPASS("IUM service 258 dispatch: securekernel provided real 0xD5 data");
 
-    // IBRS: wrmsr(0x48) with IBRS bit passing through KVM
-    printf("\n  %-52s : %s\n", "0xD5[5]  IBRS (wrmsr 0x48 from VTL1 not blocked)",
-           (secspec >> 5) & 1 ? "YES" : "NO");
-    if ((secspec >> 5) & 1)
-        ioPASS("KVM passes wrmsr(0x48, IBRS) from VTL1 through to hardware");
-
-    // STIBP at VTL boundary: wrmsr(0x48) with STIBP bit at VTL0 return
-    printf("\n  %-52s : %s\n",
-           "0xD5[11] STIBP at VTL boundary (wrmsr 0x48 at VTL return)",
-           (secspec >> 11) & 1 ? "YES" : "NO");
-    if ((secspec >> 11) & 1)
-        ioPASS("KVM passes wrmsr(0x48, STIBP) at VTL boundary");
+    if (((secspec >> 0) & 1) && ((secspec >> 4) & 1) && ((secspec >> 5) & 1))
+        ioPASS("All 3 sentinels set (bits 0,4,5) -- query pipeline intact");
     else
-        ioWARN("0xD5[11] STIBP at boundary not set",
-               "securekernel SkCallNormalMode did not write STIBP (MSR 0x48) before VTL0 return. "
-               "Check KVM wrmsr(0x48) emulation from VTL1 context.");
+        ioWARN("Sentinel check", "Bit 0 set but bits 4 or 5 missing -- partial SK response");
 
-    // IBPB at VTL boundary: wrmsr(0x49, 1) at VTL0 return
+    // IBRS present (bit 8 = SK10 = SkiSpeculationFeatures[0])
     printf("\n  %-52s : %s\n",
-           "0xD5[12] IBPB at VTL boundary (wrmsr 0x49 at VTL return)",
+           "0xD5[8]  SF[0] IBRS present (SkiSpeculationFeatures)",
+           (secspec >> 8) & 1 ? "YES" : "NO");
+    if ((secspec >> 8) & 1)
+        ioPASS("IBRS detected by securekernel (CPUID speculation features exposed correctly)");
+    else
+        ioINFO("0xD5[8] IBRS", "Not present -- CPU may not support IBRS, or KVM CPUID not exposing it");
+
+    // NOT SF[8] -- CPU needs SSBD (bit 11 = SK15 = !SkiSpeculationFeatures[8])
+    printf("\n  %-52s : %s\n",
+           "0xD5[11] NOT SF[8] CPU needs SSBD (!SkiSpecFeatures[8])",
+           (secspec >> 11) & 1 ? "YES (CPU needs SSBD)" : "NO (SSBD not needed or not applicable)");
+
+    // gs:0xAB0[1] IBPB on VTL exit (bit 12 = SK11: boundary enforcement)
+    printf("\n  %-52s : %s\n",
+           "0xD5[12] gs:0xAB0[1] IBPB on VTL exit (SK11)",
            (secspec >> 12) & 1 ? "YES" : "NO");
     if ((secspec >> 12) & 1)
-        ioPASS("KVM passes wrmsr(0x49, 1) IBPB at VTL boundary");
+        ioPASS("IBPB on VTL exit: KVM passes wrmsr(0x49, IBPB) from VTL1");
     else
-        ioWARN("0xD5[12] IBPB at boundary not set",
-               "securekernel SkCallNormalMode did not issue IBPB (MSR 0x49) before VTL0 return. "
-               "Check KVM PRED_CMD MSR (0x49) emulation from VTL1 context.");
+        ioINFO("0xD5[12]", "IBPB not issued on VTL exit (gs:0xAB0[1]=0)");
+
+    // gs:0xAB0[2] IBPB on VTL entry (bit 13 = SK12: boundary enforcement)
+    printf("\n  %-52s : %s\n",
+           "0xD5[13] gs:0xAB0[2] IBPB on VTL entry (SK12)",
+           (secspec >> 13) & 1 ? "YES" : "NO");
+    if ((secspec >> 13) & 1)
+        ioPASS("IBPB on VTL entry: VTL0 branch poisoning blocked at boundary");
+    else
+        ioWARN("0xD5[13] IBPB entry not set",
+               "No IBPB on VTL entry -- potential Spectre v2 attack surface. "
+               "Check that KVM passes wrmsr(0x49) from VTL1 and that securekernel "
+               "SkiUpdateSpeculationControl sets gs:0xAB0[2].");
+
+    // Summary: MSR pass-through assessment
+    printf("\n  MSR pass-through assessment:\n");
+    if ((secspec >> 8) & 1)
+        printf("    IBRS (MSR 0x48): securekernel detected IBRS -> wrmsr(0x48) passing through KVM\n");
+    if ((secspec >> 12) & 1)
+        printf("    IBPB (MSR 0x49): wrmsr(0x49,1) on VTL exit passing through KVM\n");
+    if ((secspec >> 13) & 1)
+        printf("    IBPB (MSR 0x49): wrmsr(0x49,1) on VTL entry passing through KVM\n");
+    if (!((secspec >> 8) & 1) && !((secspec >> 12) & 1) && !((secspec >> 13) & 1))
+        printf("    No speculation MSR activity detected from VTL1.\n");
 }
 
 // ---------------------------------------------------------------------------

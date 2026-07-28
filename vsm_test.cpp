@@ -22,6 +22,31 @@
 //   7  DMA Protection (IOMMU / VTL1 domain model)
 //   8  VTL1 Speculation Control (0xD5)
 //   9  Synthetic MSRs (requires VsmTest.sys -- see vsm_ktest.c)
+//  10  Intel APICv / Posted Interrupts per VTL    (vsm_test_intel.cpp)
+//  11  VTL Switch Correctness                     (vsm_test_intel.cpp)
+//  12  Synthetic MSR State (SynIC / STIMER / VP)  (vsm_test_synth.cpp)
+//  13  VP Register State (HvCallGetVpRegisters)   (vsm_test_synth.cpp)
+//  14  Partition Property Hypercall (0x7B)         (vsm_test_synth.cpp)
+//  15  CPUID Leaf Chain Verification               (vsm_test_synth.cpp)
+//  16  SharedUserData Hyper-V Flag                 (vsm_test_isolation.cpp)
+//  17  MSR Liveness (TIME_REF_COUNT monotonicity)  (vsm_test_isolation.cpp)
+//  18  Reference TSC Page Content                  (vsm_test_isolation.cpp)
+//  19  VTL Isolation: Physical Mapping Bypass      (vsm_test_isolation.cpp)
+//  20  MBEC: Supervisor Execute Control            (vsm_test_isolation.cpp)
+//  21  KVM MSR pass-through (SPEC_CTRL / PRED_CMD) (vsm_test_isolation.cpp)
+//  22  Multi-VP VP_INDEX Uniqueness                (vsm_test_isolation.cpp)
+//  23  VTL Switch Latency (user+kernel)            (vsm_test_kvmvsm.cpp)
+//  24  Per-VTL MSR Isolation (SynIC banking)       (vsm_test_kvmvsm.cpp)
+//  25  HvCallSetVpRegisters Round-Trip             (vsm_test_kvmvsm.cpp)
+//  26  GPA Protection Granularity                  (vsm_test_kvmvsm.cpp)
+//  27  Concurrent VTL Switch Stress                (vsm_test_kvmvsm.cpp)
+//  28  FPU/XSAVE State Isolation                   (vsm_test_kvmvsm.cpp)
+//  29  Reenlightenment / TSC Emulation MSRs        (vsm_test_kvmvsm.cpp)
+//  30  Crash MSR Probe (read-only)                 (vsm_test_kvmvsm.cpp)
+//  31  CR4 SMEP Intercept (HIGH RISK)              (vsm_test_kvmvsm.cpp)
+//  32  SynIC Signal / PostMessage Dispatch         (vsm_test_kvmvsm.cpp)
+//  33  TLB Flush Hypercalls                        (vsm_test_kvmvsm.cpp)
+//  34  VP Assist Page VTL Entry Fields             (vsm_test_kvmvsm.cpp)
 //
 
 #include <windows.h>
@@ -806,8 +831,14 @@ static void sect7_dma_protection(PNtQuerySystemInformation NtQSI)
 // KVM requirements tested here:
 //   - IUM service 258 dispatch: VslGetSecureSpeculationControlInformation
 //     must route to SkeQuerySpeculationFeaturesInformation in securekernel
-//   - Bit 0 hardcoded sentinel: always 1 if securekernel provided the data
-//   - Bits 1-4: VTL1's own KvaShadow state (SkiKvaShadow/SkiKvaShadowMode)
+//   - Bit 0, 4, 5: hardcoded sentinels (always-1, pipeline integrity check)
+//   - Bits 1-3: VTL1 KPTI state (SkiKvaShadow / SkiKvaShadowMode)
+//   - Bits 6-11, 14-15: SkiSpeculationFeatures-derived (IBRS/STIBP/eIBRS/SSBD)
+//   - Bits 12-13: per-CPU gs:0xAB0 boundary enforcement (IBPB on exit/entry)
+//
+// NOTE: ntoskrnl applies a NON-LINEAR bit remap between SK output and user-mode
+// DWORD. SK bit numbers != output bit numbers. All mappings confirmed from
+// securekernel + ntoskrnl disassembly. See VSM_VTL_Speculation_Fields.txt.
 // ---------------------------------------------------------------------------
 
 static void sect8_vtl1_speculation(PNtQuerySystemInformation NtQSI)
@@ -835,29 +866,74 @@ static void sect8_vtl1_speculation(PNtQuerySystemInformation NtQSI)
     else
         PASS("Bit[0] sentinel = 1 (securekernel provided real data)");
 
-    // Bits 1-4: VTL1's own KPTI state (NOT "enforcement vs report-only" as old docs claim)
-    printf("  VTL1 KvaShadow/KPTI active         [1] : %s  (SkiKvaShadow != 0)\n",
-           (secspec >> 1) & 1 ? "YES" : "NO");
-    printf("  VTL1 KPTI mode 2 no-PCID           [2] : %s  (SkiKvaShadowMode == 2)\n",
-           (secspec >> 2) & 1 ? "YES" : "NO");
-    printf("  VTL1 KPTI mode 1 + PCID            [3] : %s  (SkiKvaShadowMode == 1)\n",
-           (secspec >> 3) & 1 ? "YES" : "NO");
-    printf("  VTL1 KPTI + INVPCID                [4] : %s  (SkiFlushPcid & 2)\n",
-           (secspec >> 4) & 1 ? "YES" : "NO");
-    printf("  VTL1 IBRS present                  [5] : %s\n", (secspec >> 5) & 1 ? "YES" : "NO");
-    printf("  VTL1 BHB flush on VTL0 return      [6] : %s  (SkiBhbFlushSequence != 0)\n",
-           (secspec >> 6) & 1 ? "YES" : "NO");
-    printf("  VTL1 STIBP                         [7] : %s\n", (secspec >> 7) & 1 ? "YES" : "NO");
-    printf("  VTL1 SSBD (SkiSsbdMsr / MSR 0x48)  [8] : %s\n", (secspec >> 8) & 1 ? "YES" : "NO");
-    printf("  VTL1 STIBP at VTL boundary         [11] : %s  (gs:0xAB0 -> MSR 0x48)\n",
-           (secspec >> 11) & 1 ? "YES" : "NO");
-    printf("  VTL1 IBPB at VTL boundary          [12] : %s  (gs:0xAB0 -> MSR 0x49)\n",
-           (secspec >> 12) & 1 ? "YES" : "NO");
+    // Output bits after ntoskrnl non-linear remap from SK bits.
+    // SK bit → output bit mapping confirmed from securekernel + ntoskrnl disassembly.
+    // See VSM_VTL_Speculation_Fields.txt for full documentation.
 
+    // Sentinels (bits 0, 4, 5): always 1 when query succeeds
+    printf("  sentinel always-1              [0] SK0:  hardcoded         : %s\n",
+           (secspec >> 0) & 1 ? "YES" : "NO");
+
+    // KPTI state (bits 1-3)
+    printf("  VTL1 KPTI active               [1] SK1:  SkiKvaShadow!=0  : %s\n",
+           (secspec >> 1) & 1 ? "YES" : "NO");
+    printf("  VTL1 KPTI no-PCID              [2] SK2:  SkiKvaShadowMode==2 : %s\n",
+           (secspec >> 2) & 1 ? "YES" : "NO");
+    printf("  VTL1 KPTI + PCID               [3] SK3:  SkiKvaShadowMode==1 : %s\n",
+           (secspec >> 3) & 1 ? "YES" : "NO");
+
+    // Sentinels (bits 4, 5)
+    printf("  sentinel always-1              [4] SK17: or edx,20000h    : %s\n",
+           (secspec >> 4) & 1 ? "YES" : "NO");
+    printf("  sentinel always-1              [5] SK16: or ecx,200h+shl7 : %s\n",
+           (secspec >> 5) & 1 ? "YES" : "NO");
+
+    // SkiSpeculationFeatures-derived bits (bits 6-11, 14-15)
+    printf("  !SF[16]&&!SF[17] (fallback IBRS)[6] SK8:  SkiSpecFeatures  : %s\n",
+           (secspec >> 6) & 1 ? "YES" : "NO");
+    printf("  SF[4] STIBP present            [7] SK9:  SkiSpecFeatures  : %s\n",
+           (secspec >> 7) & 1 ? "YES" : "NO");
+    printf("  SF[0] IBRS present             [8] SK10: SkiSpecFeatures  : %s\n",
+           (secspec >> 8) & 1 ? "YES" : "NO");
+    printf("  SF[6] eIBRS / IBRS_ALL         [9] SK13: SkiSpecFeatures  : %s\n",
+           (secspec >> 9) & 1 ? "YES" : "NO");
+    printf("  SF[7] SSBD available          [10] SK14: SkiSpecFeatures  : %s\n",
+           (secspec >> 10) & 1 ? "YES" : "NO");
+    printf("  NOT SF[8] (CPU needs SSBD)    [11] SK15: !SkiSpecFeatures[8] : %s\n",
+           (secspec >> 11) & 1 ? "YES" : "NO");
+
+    // Per-CPU gs:0xAB0 boundary enforcement (bits 12-13)
+    printf("  gs:0xAB0[1] IBPB on VTL exit  [12] SK11: boundary enforce : %s\n",
+           (secspec >> 12) & 1 ? "YES" : "NO");
+    printf("  gs:0xAB0[2] IBPB on VTL entry [13] SK12: boundary enforce : %s\n",
+           (secspec >> 13) & 1 ? "YES" : "NO");
+
+    // Combined capability bits (bits 14-15)
+    printf("  SF[9]||SF[13] (eIBRS/BHB ret) [14] SK18: SkiSpecFeatures  : %s\n",
+           (secspec >> 14) & 1 ? "YES" : "NO");
+    printf("  SF[12] IBPB suppressed        [15] SK19: SkiSpecFeatures  : %s\n",
+           (secspec >> 15) & 1 ? "YES" : "NO");
+
+    // Sentinel integrity check
+    if (((secspec >> 0) & 1) && ((secspec >> 4) & 1) && ((secspec >> 5) & 1))
+        PASS("All 3 sentinels set (bits 0,4,5) -- query pipeline intact");
+    else if ((secspec >> 0) & 1)
+        WARN("Sentinel check", "Bit 0 set but bits 4 or 5 missing -- partial SK response or remap error");
+
+    // KPTI assessment
     if ((secspec & 1) && ((secspec >> 1) & 1))
         PASS("VTL1 running KPTI (securekernel has its own KVA shadow, separate from VTL0)");
     if ((secspec & 1) && !((secspec >> 1) & 1))
         INFO("VTL1 KPTI", "VTL1 not running KPTI (CPU not Meltdown-vulnerable, or KPTI disabled in SK)");
+
+    // Boundary enforcement assessment
+    if ((secspec >> 13) & 1)
+        PASS("VTL1 IBPB on entry active (gs:0xAB0[2]) -- VTL0 branch poisoning blocked");
+    else if ((secspec & 1) && !((secspec >> 13) & 1) && !((secspec >> 15) & 1))
+        WARN("VTL1 IBPB entry", "Not active and IBPB not suppressed -- potential Spectre v2 attack surface");
+
+    if ((secspec >> 12) & 1)
+        PASS("VTL1 IBPB on exit active (gs:0xAB0[1]) -- VTL1 branch training doesn't leak to VTL0");
 }
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1050,21 @@ static void sect9_synthetic_msrs()
 }
 
 // ---------------------------------------------------------------------------
+// External section runners (vsm_test_intel.cpp, vsm_test_synth.cpp,
+// vsm_test_isolation.cpp)
+// ---------------------------------------------------------------------------
+
+extern void RunIntelVsmTests(void* NtQSI);
+extern void RunSyntheticMsrTests(void* NtQSI);
+extern void RunIsolationTests(void* pNtQSI);
+extern void RunKvmVsmTests(void* pNtQSI);
+
+// External counters from vsm_test_synth.cpp, vsm_test_isolation.cpp, vsm_test_kvmvsm.cpp
+extern int s12_pass, s12_fail, s12_warn;
+extern int iso_pass, iso_fail, iso_warn;
+extern int kvsm_pass, kvsm_fail, kvsm_warn;
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -1008,8 +1099,29 @@ int main(int argc, char* argv[])
     if (!filter || filter == 8) sect8_vtl1_speculation(NtQSI);
     if (!filter || filter == 9) sect9_synthetic_msrs();
 
+    // Intel-specific addendum sections (3, 7, 10, 11)
+    if (!filter || filter == 10 || filter == 11)
+        RunIntelVsmTests(NtQSI);
+
+    // Synthetic MSR, VP register, partition property, CPUID chain (12-15)
+    if (!filter || (filter >= 12 && filter <= 15))
+        RunSyntheticMsrTests(NtQSI);
+
+    // Isolation, liveness, MBEC empirical, speculation cross-check (16-22)
+    if (!filter || (filter >= 16 && filter <= 22))
+        RunIsolationTests(NtQSI);
+
+    // KVM VSM implementation verification (23-34)
+    if (!filter || (filter >= 23 && filter <= 34))
+        RunKvmVsmTests(NtQSI);
+
+    // Combine counters from all modules
+    int total_pass = g_pass + s12_pass + iso_pass + kvsm_pass;
+    int total_fail = g_fail + s12_fail + iso_fail + kvsm_fail;
+    int total_warn = g_warn + s12_warn + iso_warn + kvsm_warn;
+
     printf("\n====================================================================\n");
-    printf("Results: %d PASS  %d FAIL  %d WARN\n", g_pass, g_fail, g_warn);
+    printf("Results: %d PASS  %d FAIL  %d WARN\n", total_pass, total_fail, total_warn);
     printf("====================================================================\n");
-    return g_fail > 0 ? 1 : 0;
+    return total_fail > 0 ? 1 : 0;
 }

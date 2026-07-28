@@ -52,9 +52,9 @@ typedef struct {
 } VSMT_REF_TSC;
 
 typedef struct {
-    UINT64   NtdllCodePagePa;
-    BOOLEAN  WriteBlocked;
-    BOOLEAN  ReadAllowed;
+    UINT64   NtoskrnlCodePagePa;
+    UINT32   WriteBlocked;
+    UINT32   ReadAllowed;
     NTSTATUS Status;
 } VSMT_PHYS_BYPASS;
 
@@ -77,8 +77,8 @@ typedef struct {
 typedef struct {
     ULONG    CpuCount;
     UINT64   VpIndexPerCpu[64];
-    BOOLEAN  AllUnique;
-    BOOLEAN  MatchesCpuCount;
+    UINT32   AllUnique;
+    UINT32   MatchesCpuCount;
     NTSTATUS Status;
 } VSMT_MULTIVCPU;
 
@@ -250,7 +250,7 @@ NTSTATUS HandlePhysBypass(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     PVOID codeVa = (PUCHAR)base + nt->OptionalHeader.BaseOfCode;
 
     PHYSICAL_ADDRESS pa = MmGetPhysicalAddress(codeVa);
-    s->NtdllCodePagePa = pa.QuadPart;
+    s->NtoskrnlCodePagePa = pa.QuadPart;
 
     KdPrint(("VsmTest: PhysBypass: ntoskrnl code VA=%p PA=0x%llX\n",
              codeVa, pa.QuadPart));
@@ -571,9 +571,10 @@ NTSTATUS HandleMultiVcpu(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
 //
 // Maps and reads the VP assist page (MSR 0x40000073 bits[63:12] = GPA).
 //
-// VP assist page structure (HVTSC_VP_ASSIST_PAGE in TLFS):
-//   +0x000 UINT64 ApicAssist        -- bit 0 = EOI optimization active
-//   +0x008 UINT64 NestedEnlightenments -- bit 0 = enlightened VMCS active
+// VP assist page structure (HV_VP_ASSIST_PAGE in TLFS):
+//   +0x000 UINT32 ApicAssist        -- bit 0 = EOI optimization active (no EOI required)
+//   +0x004 UINT32 Reserved
+//   +0x008 UINT32 NestedEnlightenments -- bit 0 = enlightened VMCS active
 //   +0x010 UINT64 CurrentNestedVmcs -- GPA of current nested VMCS (nested virt)
 //
 // If ApicAssist bit 0 = 1: guest APIC EOI optimization is active.
@@ -614,8 +615,8 @@ NTSTATUS HandleAssistPage(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     {
         PUCHAR pg = (PUCHAR)mapped;  // declared before __try (C89)
         __try {
-            s->ApicAssist        = (UINT32)(*(UINT64*)(pg + 0x000));
-            s->NestedEnlBit      = (UINT32)(*(UINT64*)(pg + 0x008));
+            s->ApicAssist        = *(UINT32*)(pg + 0x000);
+            s->NestedEnlBit      = *(UINT32*)(pg + 0x008);
             s->CurrentNestedVmcs = *(UINT64*)(pg + 0x010);
         }
         __except (EXCEPTION_EXECUTE_HANDLER) {

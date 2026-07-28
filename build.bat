@@ -33,7 +33,7 @@ goto :build_driver
 :build_user
 echo [1/2] Building vsm_test.exe (user-mode test suite)...
 cl.exe /nologo /EHa /Zi /O2 /W3 ^
-    vsm_test.cpp vsm_test_intel.cpp vsm_test_synth.cpp vsm_test_isolation.cpp ^
+    vsm_test.cpp vsm_test_intel.cpp vsm_test_synth.cpp vsm_test_isolation.cpp vsm_test_kvmvsm.cpp ^
     /link /SUBSYSTEM:CONSOLE /MACHINE:X64 ^
     ntdll.lib kernel32.lib advapi32.lib tbs.lib ^
     /OUT:vsm_test.exe
@@ -64,7 +64,7 @@ cl.exe /nologo /kernel /O2 /GS- /W3 /Zi ^
     /I "%WDK_INC%" ^
     /D_AMD64_ /DAMD64 /D_WIN64 ^
     /D POOL_NX_OPTIN=1 ^
-    /c vsm_ktest.c vsm_ktest_isolation.c
+    /c vsm_ktest.c vsm_ktest_isolation.c vsm_ktest_kvmvsm.c
 if errorlevel 1 (
     echo FAILED: vsm_ktest.c
     exit /b 1
@@ -78,7 +78,7 @@ link.exe /nologo /DRIVER /NODEFAULTLIB ^
     /SECTION:INIT,d ^
     /LIBPATH:"%WDK_LIB%" ^
     ntoskrnl.lib ^
-    vsm_ktest.obj vsm_ktest_isolation.obj vsm_vmcall.obj ^
+    vsm_ktest.obj vsm_ktest_isolation.obj vsm_ktest_kvmvsm.obj vsm_vmcall.obj ^
     /OUT:VsmTest.sys ^
     /PDB:VsmTest.pdb
 if errorlevel 1 (
