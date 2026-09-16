@@ -253,8 +253,8 @@ NTSTATUS HandleMsrIsolation(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     s->Vtl0Sint1         = SafeReadMsr(0x40000091u);
     s->Vtl0Stimer0Config = SafeReadMsr(0x400000B0u);
     s->Vtl0Scontrol      = SafeReadMsr(0x40000080u);
-    s->Vtl0Simp          = SafeReadMsr(0x40000082u);
-    s->Vtl0Siefp         = SafeReadMsr(0x40000083u);
+    s->Vtl0Simp          = SafeReadMsr(0x40000083u);  // SIMP  = SynIC Message Page PA
+    s->Vtl0Siefp         = SafeReadMsr(0x40000082u);  // SIEFP = SynIC Event Flags Page PA
 
     s->Sint0MatchesVtl1    = (s->Vtl0Sint0 == 0x200F0ull) ? TRUE : FALSE;
     s->Sint1MatchesVtl1    = (s->Vtl0Sint1 == 0x20051ull) ? TRUE : FALSE;
@@ -807,7 +807,7 @@ NTSTATUS HandleFlush(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     // Input: {UINT64 AddressSpace, UINT64 Flags, HV_GENERIC_SET ProcessorSet}
     RtlZeroMemory(inPage, 4096);
     inp[0] = 0;                      // AddressSpace = 0 (current)
-    inp[1] = (1ull | (1ull << 2));   // FLUSH_ALL_SPACES | FLUSH_ALL_PROCESSORS
+    inp[1] = (1ull | (1ull << 1));   // FLUSH_ALL_PROCESSORS (bit0) | FLUSH_ALL_VIRTUAL_ADDRESS_SPACES (bit1)
     inp[2] = 0;                      // ProcessorMask (ignored with FLUSH_ALL_PROCESSORS)
     inPhys = MmGetPhysicalAddress(inPage);
 
@@ -816,7 +816,7 @@ NTSTATUS HandleFlush(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     // HvCallFlushVirtualAddressList (0x0003) -- rep hypercall, 1 VA
     RtlZeroMemory(inPage, 4096);
     inp[0] = 0;                      // AddressSpace = 0
-    inp[1] = (1ull << 2);            // FLUSH_ALL_PROCESSORS
+    inp[1] = 1ull;                   // FLUSH_ALL_PROCESSORS (bit0)
     inp[2] = 0;                      // ProcessorMask
     inp[3] = 0;                      // First VA to flush
 

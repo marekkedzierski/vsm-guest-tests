@@ -53,8 +53,8 @@
 // Source: securekernel ShvlpInitializeSynic, hvax64 bitmap 0xFF0000FFFF003Fh
 #define HV_MSR_SCONTROL          0x40000080u  // SynIC enable + APIC config
 #define HV_MSR_SVERSION          0x40000081u  // SynIC version (read-only)
-#define HV_MSR_SIMP              0x40000082u  // Synthetic Interrupt Message Page PA
-#define HV_MSR_SIEFP             0x40000083u  // Synthetic Interrupt Event Flags Page PA
+#define HV_MSR_SIEFP             0x40000082u  // Synthetic Interrupt Event Flags Page PA
+#define HV_MSR_SIMP              0x40000083u  // Synthetic Interrupt Message Page PA
 #define HV_MSR_EOM               0x40000084u  // End of Message trigger
 
 // SINT group (0x40000090-0x4000009F)
@@ -119,8 +119,8 @@ typedef struct {
 
     // SynIC
     UINT64 Scontrol;           // 0x40000080 -- SynIC control
-    UINT64 Simp;               // 0x40000082 -- message page PA
-    UINT64 Siefp;              // 0x40000083 -- event flags page PA
+    UINT64 Simp;               // 0x40000083 -- message page PA
+    UINT64 Siefp;              // 0x40000082 -- event flags page PA
 
     // SINTs (relevant subset)
     UINT64 Sint0;              // 0x40000090 -- VTL1 primary: expected 0x200F0
@@ -165,13 +165,15 @@ typedef struct {
 // VSM VP idle transitions (accessible from VTL0)
 #define HV_VPREG_VSM_VP_IDLE_TRANSITIONS 0x00090004u  // ntoskrnl line 773801
 
-// Partition property IDs (used with hypercall 0x7B HvCallGetPartitionProperty)
+// System property IDs (used with hypercall 0x7B HvCallGetSystemProperty).
+// NOTE: 0x7B is the *system*-property getter (small property IDs like 0x0F/0x14),
+// distinct from HvCallGet/SetPartitionProperty (0x44/0x45, property IDs 0x20000+).
 // Source: ntoskrnl HvlpQueryHypervisorSchedulerType (line 1834918)
-#define HV_PARTITION_PROPERTY_SCHEDULER_TYPE  0x0000000Fu  // returns scheduler type byte
-#define HV_PARTITION_PROPERTY_DMA_GUARD       0x00000014u  // returns DMA guard status
+#define HV_SYSTEM_PROPERTY_SCHEDULER_TYPE  0x0000000Fu  // returns scheduler type byte
+#define HV_SYSTEM_PROPERTY_DMA_GUARD       0x00000014u  // returns DMA guard status
 
 typedef struct {
-    UINT32   PropertyId;   // HV_PARTITION_PROPERTY_*
+    UINT32   PropertyId;   // HV_SYSTEM_PROPERTY_*
     UINT64   Value;        // property value
     UINT64   HvStatus;     // 0 = success
     NTSTATUS Status;
@@ -220,13 +222,15 @@ static HANDLE OpenDriver()
 //     Source: hvax64 HcpHvDispatchMsrReadIntercept_Internal,
 //             hvix64 identical handler.
 //
-//   MSR 0x40000082 (SIMP) != 0:
+//   MSR 0x40000083 (SIMP) != 0:
 //     SynIC Message Page must be mapped for VTL1 intercept delivery.
-//     Source: securekernel ShvlpInitializeSynic line 216804.
+//     Written non-zero by securekernel ShvlpInitializeSynic (proc @216804),
+//     wrmsr 0x40000083 <- ShvlpSynicMessagePfn at line ~216861.
 //
-//   MSR 0x40000083 (SIEFP) != 0:
-//     SynIC Event Flags Page mapped. VTL1 uses this for event notification.
-//     Source: securekernel ShvlpInitializeSynic line 216815.
+//   MSR 0x40000082 (SIEFP):
+//     SynIC Event Flags Page. VTL1 uses this for event notification.
+//     Note: not written by securekernel ShvlpInitializeSynic in this path,
+//     so a zero value here is not necessarily a failure.
 //
 //   MSR 0x40000090 (SINT0) = 0x200F0 (when VTL1 active):
 //     VTL1's primary synthetic interrupt channel.
@@ -259,11 +263,11 @@ void sect12_synthetic_msr_state()
         printf("  40000001 | bit 0 = 1 (page enabled)   | hvax64 MSR dispatch\n");
         printf("  40000002 | VP index (0..N-1)           | ntoskrnl rdmsr usage\n");
         printf("  40000022 | TSC freq in Hz (non-zero)   | hvax64 MSR dispatch\n");
-        printf("  40000082 | non-zero (SIMP enabled)     | securekernel line 216804\n");
-        printf("  40000083 | non-zero (SIEFP enabled)    | securekernel line 216815\n");
+        printf("  40000082 | SIEFP (may be 0 in this path)| securekernel (not written)\n");
+        printf("  40000083 | non-zero (SIMP enabled)     | securekernel line 216861\n");
         printf("  40000090 | 0x200F0 (SINT0, VTL1 set)  | securekernel line 216815\n");
-        printf("  40000091 | 0x20051 (SINT1, VTL1 set)  | securekernel line 215321\n");
-        printf("  400000B0 | 0x10008 (STIMER0_CONFIG)   | securekernel line 215324\n");
+        printf("  40000091 | 0x20051 (SINT1, VTL1 set)  | securekernel line 215319\n");
+        printf("  400000B0 | 0x10008 (STIMER0_CONFIG)   | securekernel line 215323\n");
         printf("  400000E3 | EnabledVtlSet bit 1 = 1    | VSM_PARTITION_STATUS\n");
         return;
     }
@@ -314,8 +318,8 @@ void sect12_synthetic_msr_state()
     // ---- SynIC ----
     s12sub("SynIC MSRs (0x40000080-0x40000083)");
     printf("  SCONTROL (0x40000080): 0x%016llX\n", st.Scontrol);
-    printf("  SIMP     (0x40000082): 0x%016llX\n", st.Simp);
-    printf("  SIEFP    (0x40000083): 0x%016llX\n", st.Siefp);
+    printf("  SIMP     (0x40000083): 0x%016llX\n", st.Simp);
+    printf("  SIEFP    (0x40000082): 0x%016llX\n", st.Siefp);
 
     if (st.Simp == VSMT_SENTINEL || st.Simp == 0)
         s12WARN("SIMP", "SynIC Message Page not mapped -- VTL1 intercept delivery may not work");
@@ -553,9 +557,9 @@ void sect14_partition_properties()
 
     struct { UINT32 propId; const char* name; const char* notes; }
     props[] = {
-        { HV_PARTITION_PROPERTY_SCHEDULER_TYPE, "Scheduler type [0x0F]",
+        { HV_SYSTEM_PROPERTY_SCHEDULER_TYPE, "Scheduler type [0x0F]",
           "1=Classic(SMT-off), 2=Classic, 3=Core, 4=Root" },
-        { HV_PARTITION_PROPERTY_DMA_GUARD, "DMA guard enabled [0x14]",
+        { HV_SYSTEM_PROPERTY_DMA_GUARD, "DMA guard enabled [0x14]",
           "0=disabled, 1=enabled; ntoskrnl HvlDmaGetDmaGuardEnabled" },
     };
 

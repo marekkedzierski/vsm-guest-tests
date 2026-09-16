@@ -102,6 +102,7 @@
     <ClCompile Include="vsm_test_intel.cpp" />
     <ClCompile Include="vsm_test_synth.cpp" />
     <ClCompile Include="vsm_test_isolation.cpp" />
+    <ClCompile Include="vsm_test_kvmvsm.cpp" />
   </ItemGroup>
 
   <!-- ── Headers (none yet, shown for convenience) ─────────────────────── -->

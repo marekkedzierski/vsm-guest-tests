@@ -14,7 +14,7 @@
 //   0x80D  VSMT_IOCTL_ASSIST_PAGE    -- VP assist page content
 //
 
-#include <ntddk.h>
+#include <ntifs.h>     // superset of ntddk.h; provides ZwAllocateVirtualMemory, ZwFreeVirtualMemory
 #include <ntimage.h>   // PIMAGE_DOS_HEADER, PIMAGE_NT_HEADERS
 
 // RtlPcToFileHeader: returns the base address of the image containing PcValue.

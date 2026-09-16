@@ -140,6 +140,8 @@
     <ClCompile Include="vsm_ktest.c" />
     <!-- Isolation-test handlers (phys bypass, MBEC exec, liveness, multi-VP) -->
     <ClCompile Include="vsm_ktest_isolation.c" />
+    <!-- KVM-specific VSM/VTL test handlers (sections 23-34) -->
+    <ClCompile Include="vsm_ktest_kvmvsm.c" />
   </ItemGroup>
 
   <!-- MASM: VMCALL / VMMCALL stubs + safe MSR read/write helpers -->

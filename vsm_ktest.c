@@ -360,8 +360,8 @@ static NTSTATUS HandleSynthState(PVOID outBuf, ULONG outLen, PULONG_PTR outInfo)
     s->TimeRefCount      = SafeReadMsr(0x40000020u);
     s->TscFrequency      = SafeReadMsr(0x40000022u);
     s->Scontrol          = SafeReadMsr(0x40000080u);
-    s->Simp              = SafeReadMsr(0x40000082u);
-    s->Siefp             = SafeReadMsr(0x40000083u);
+    s->Simp              = SafeReadMsr(0x40000083u);  // SIMP  = SynIC Message Page PA
+    s->Siefp             = SafeReadMsr(0x40000082u);  // SIEFP = SynIC Event Flags Page PA
     s->Sint0             = SafeReadMsr(0x40000090u);  // VTL1 primary (expect 0x200F0)
     s->Sint1             = SafeReadMsr(0x40000091u);  // VTL1 timer  (expect 0x20051)
     s->Sint2             = SafeReadMsr(0x40000092u);
@@ -484,7 +484,8 @@ static NTSTATUS HandleVpRegister(PVOID inBuf, ULONG inLen,
 // ---------------------------------------------------------------------------
 // IOCTL: VSMT_IOCTL_PARTITION_PROP
 //
-// Queries a partition property via hypercall 0x7B (HvCallGetPartitionProperty).
+// Queries a system property via hypercall 0x7B (HvCallGetSystemProperty).
+// (Distinct from HvCallGet/SetPartitionProperty 0x44/0x45 -- see vsm_test_synth.cpp.)
 // Source: ntoskrnl HvlpQueryHypervisorSchedulerType (line 1834918)
 //         lea ecx, [rdi+7Bh] with rdi=0 -> call code 0x7B
 //         Property 0x0F = scheduler type
@@ -522,7 +523,7 @@ static NTSTATUS HandlePartitionProp(PVOID inBuf, ULONG inLen,
     RtlZeroMemory(inPage, 4096);
     RtlZeroMemory(outPage, 4096);
 
-    // HvCallGetPartitionProperty input:
+    // HvCallGetSystemProperty input:
     //   +0x00 UINT64 PartitionId = 0xFFFF...FFFF (self)
     //   +0x08 UINT32 PropertyCode
     PUINT64 inp = (PUINT64)inPage;
@@ -539,7 +540,7 @@ static NTSTATUS HandlePartitionProp(PVOID inBuf, ULONG inLen,
         out->Value = outp[0];
     }
 
-    KdPrint(("VsmTest: GetPartitionProperty(0x%X) hvStatus=0x%llX value=0x%llX\n",
+    KdPrint(("VsmTest: GetSystemProperty(0x%X) hvStatus=0x%llX value=0x%llX\n",
              io->PropertyId, out->HvStatus, out->Value));
 
     MmFreeContiguousMemory(inPage);

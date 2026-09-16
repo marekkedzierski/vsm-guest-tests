@@ -307,8 +307,8 @@ static void sect24_msr_isolation()
     printf("    SINT1  (0x40000091): 0x%016llX\n", iso.Vtl0Sint1);
     printf("    STIMER0(0x400000B0): 0x%016llX\n", iso.Vtl0Stimer0Config);
     printf("    SCONTROL(0x40000080): 0x%016llX\n", iso.Vtl0Scontrol);
-    printf("    SIMP   (0x40000082): 0x%016llX\n", iso.Vtl0Simp);
-    printf("    SIEFP  (0x40000083): 0x%016llX\n", iso.Vtl0Siefp);
+    printf("    SIMP   (0x40000083): 0x%016llX\n", iso.Vtl0Simp);
+    printf("    SIEFP  (0x40000082): 0x%016llX\n", iso.Vtl0Siefp);
     printf("\n");
 
     if (iso.Sint0MatchesVtl1)
